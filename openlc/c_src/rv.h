@@ -1,0 +1,2 @@
+double __rv1(const double time, const double t_zero, const double period, const double K1,  const double e, const double w, const double incl, const double V0, const int accurate_tp);
+double __rv2(const double time, double * RV const double t_zero, const double period, const double K1, const double K2, const double e, const double w, const double incl, const double V0, const int accurate_tp);
