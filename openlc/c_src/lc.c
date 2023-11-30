@@ -1,7 +1,6 @@
 
 #include <kepler.h>
 #include <flux_drop.h>
-#include <sampler.h>
 
 
 double __lc (const double time,
@@ -116,16 +115,4 @@ __kernel void lc(
                     light_3,
                     ld_law,
                     accurate_tp);
-}
-
-__kernel void reduce(__global int* x) {
-   __local int a, b;
-   a = 0;
-   b = 0;
-   /* Increment without atomic add */
-   a++;
-   /* Increment with atomic add */
-   atomic_inc(&b);
-   x[0] = a;
-   x[1] = b;
 }

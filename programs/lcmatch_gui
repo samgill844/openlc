@@ -1,0 +1,713 @@
+#!/home/sam/anaconda3/bin/python
+import openlc, argparse, numpy as np
+from astropy.table import Table
+import pyqtgraph as pg
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QSizePolicy, QSlider, QSpacerItem, \
+    QVBoxLayout, QWidget, QLineEdit , QCheckBox, QProgressBar, QPlainTextEdit, QRadioButton
+from pyqtgraph.dockarea import *
+import pyqtgraph.exporters
+from pyqtgraph.Qt import QtGui, QtCore
+
+def parse_args():
+
+    # Argument parser
+    parser = argparse.ArgumentParser('LCMATCH: template matching algorithm for lightcurves.')
+
+    parser.add_argument("filename",
+                        help='The filename from which to template search')
+
+    parser.add_argument('-a', 
+                        '--period',
+                        help='The orbital period in arbritraty time units consisting with the input file.',
+                        default=10, type=float)  
+
+    parser.add_argument('-b', 
+                        '--radius_1',
+                        help='The radius of star 1 in units of the semi-major axis, a.',
+                        default=0.2, type=float)  
+
+    parser.add_argument('-c', 
+                        '--k',
+                        help='The ratio of the radii of star 2 and star 1 (R2/R1).',
+                        default=0.2, type=float)  
+        
+    parser.add_argument('-d', 
+                        '--b',
+                        help='The impact parameter of the orbit (incl = arccos(radius_1*b).',
+                        default=0., type=float)  
+
+    parser.add_argument('-e', 
+                        '--light_3',
+                        help='The third light.',
+                        default=0.0, type=float) 
+    
+    parser.add_argument('-f', 
+                        '--fs',
+                        help='fs.',
+                        default=0.0, type=float) 
+    parser.add_argument('-g', 
+                        '--fc',
+                        help='fc',
+                        default=0.0, type=float) 
+
+    parser.add_argument('-i', 
+                        '--ldc_1',
+                        help='ldc_1',
+                        default=0.7, type=float) 
+    parser.add_argument('-k', 
+                        '--ldc_2',
+                        help='ldc_2',
+                        default=0.5, type=float) 
+
+
+
+    parser.add_argument('-l', 
+                        '--output_dir',
+                        help='Tha save path directory',
+                        default='.',  type=str) 
+    
+    parser.add_argument('-m', 
+                        '--name',
+                        help='The name of the star',
+                        default='star',  type=str) 
+
+
+
+    parser.add_argument('-n', 
+                        '--context',
+                        help='Tha openCL context',
+                        default=0,  type=int) 
+    
+    parser.add_argument('-o', 
+                        '--device',
+                        help='Tha openCL device.',
+                        default=2,  type=int) 
+    
+
+    parser.add_argument('-p', 
+                        '--threshold',
+                        help='The threshold',
+                        default=0., type=float) 
+    
+
+
+
+    parser.add_argument('-q', 
+                        '--bin_data',
+                        help='Bin',
+                        default=None, type=float) 
+
+    parser.add_argument('-r', 
+                        '--keep',
+                        help='The number of peaks to keep. Default is 10',
+                        default=10, type=int) 
+
+
+    parser.add_argument('--plot_aliases', action="store_true", default=False)
+    parser.add_argument('--estimate_snr', action="store_true", default=False)
+    parser.add_argument('--paophot2', action="store_true", default=False)
+    parser.add_argument('--ngts_archive', action="store_true", default=False)
+    parser.add_argument('--check_normaliation_model', action="store_true", default=False)
+    parser.add_argument('--injection_test', action="store_true", default=False)
+
+    parser.add_argument('-x', 
+                        '--sg_iter',
+                        help='sg_iter',
+                        default=5, type=int) 
+    parser.add_argument('-y', 
+                        '--sg_window',
+                        help='sg_window',
+                        default=2.0, type=float)
+    parser.add_argument('-z', 
+                        '--sg_sigmaclip',
+                        help='sg_sigmaclip',
+                        default=3, type=int) 
+
+    parser.add_argument('-aa', 
+                        '--normalisation_model',
+                        help='Normalisation model',
+                        default=None, type=str) 
+    
+    parser.add_argument('-ab', '--paophot2_detrend', 
+                        help='A list of parameters to detrend with', 
+                        nargs='+',
+                        default=[])
+
+    return parser.parse_args()
+
+
+
+
+
+
+class Window():
+    def __init__(self, title = None):
+        # Set the defaults
+        self.gradsplit = 0.3
+        self.SG_iter = 5
+        self.lc_model_data = None
+        self.ld_law = 2
+
+        # Create the GUI
+        self.app = pg.mkQApp("SPOCFIT") 
+        self.win = QtGui.QMainWindow()
+
+        self.app.setStyleSheet("QLabel{font-size: 18pt;}")
+        #################################################################
+        # Create the window and the dock area
+        #################################################################
+        self.area = DockArea()
+        self.win.setCentralWidget(self.area)
+        #self.win.resize(1300,800)
+        #self.win.showFullScreen()
+        self.win.showMaximized()
+
+        title_text = 'SPOCFIT'
+        if title is not None: title_text += ' {:}'.format(title)
+        self.win.setWindowTitle(title_text)
+
+        #################################################################
+        # Create the first dock which holds the plots in
+        #################################################################
+        self.d1 = Dock(title, size=(1000,800))     ## give this dock the minimum possible size
+        self.d_segment_split = Dock("Segment\nsplit", size=(300,8))
+        self.d_normalisation = Dock("Normalisation\nParameters", size=(300,50))
+        self.d_write_data = Dock("Write\nParameters", size=(300,50))
+        self.d_save_image = Dock("Save\nPlot", size=(300,50))
+        self.d_fitted = Dock("Lightcurve\nParameters", size=(300,8))
+        self.d_stellar = Dock("Stellar\nParameters", size=(300,100))
+        self.d_fitting= Dock("Fitting", size=(300,100))
+
+        #################################################################
+        # Add the docks
+        #################################################################
+        self.area.addDock(self.d1)      ## place d1 at left edge of dock area (it will fill the whole space since there are no other docks yet)
+        self.area.addDock(self.d_segment_split, 'right', self.d1 )     ## place d2 at right edge of dock area
+        self.area.addDock(self.d_normalisation, 'bottom', self.d_segment_split)     ## place d2 at right edge of dock area
+        self.area.addDock(self.d_write_data, 'bottom', self.d_normalisation)     ## place d2 at right edge of dock area
+        self.area.addDock(self.d_save_image, 'bottom', self.d_write_data)     ## place d2 at right edge of dock area
+        self.area.addDock(self.d_fitted, 'bottom', self.d_save_image)     ## place d2 at right edge of dock area
+        self.area.addDock(self.d_stellar, 'bottom', self.d_fitted)     ## place d2 at right edge of dock area
+        self.area.addDock(self.d_fitting, 'bottom', self.d_stellar)     ## place d2 at right edge of dock area
+
+        #################################################################
+        # Create the view and plots for the left size
+        #################################################################
+        self.view = pg.GraphicsLayoutWidget()
+        self.w1 = self.view.addPlot()
+        self.view.nextRow()
+        self.w2 = self.view.addPlot()
+        self.view.nextRow()
+        self.w3 = self.view.addPlot()
+        self.w1.setXLink(self.w2)
+        self.w2.setXLink(self.w3)  
+
+        # showing x and y grids
+        self.w1.showGrid(x = True, y = True)
+        self.w2.showGrid(x = True, y = True)
+
+        # set properties of the label for y axis
+        self.w1.setLabel('left', 'PDCSAP FLUX', units ='e/s')
+        self.w2.setLabel('left', 'NORMALISED FLUX')
+        self.w3.setLabel('left', 'SAP BKG FLUX', units ='e/s')
+
+        # set properties of the label for x axis
+        self.w1.setLabel('bottom', 'BTJD [JD - 2457000]')
+        self.w2.setLabel('bottom', 'BTJD [JD - 2457000]')
+        self.w3.setLabel('bottom', 'BTJD [JD - 2457000]')
+
+        self.w1.addLegend(frame=False, colCount=2)
+        self.w2.addLegend(frame=False, colCount=2)
+
+        self.normed_roi = pg.ROI([-8, 14], [6, 5], parent=self.w2, pen=pg.mkPen('y'))
+        self.normed_roi.addScaleHandle([0.5, 0], [0.5, 1])
+        self.normed_roi.addScaleHandle([0.5, 1], [0.5, 0])
+        self.normed_roi.addScaleHandle([0, 0.5], [1, 0.5])
+        self.normed_roi.addScaleHandle([1, 0.5], [0., 0.5])
+        self.normed_roi.addScaleHandle([0,0], [1,1])
+        self.normed_roi.addScaleHandle([0,1], [1,0])
+        self.normed_roi.addScaleHandle([1,0], [0,1])
+        self.normed_roi.addScaleHandle([1,1], [0,0])
+        self.normed_roi.setVisible(False)
+
+        # now link it to update the text boxes 
+        #self.normed_roi.sigRegionChanged.connect(self.roiChangedEvent) 
+        self.normed_roi.setSize([0.5,0.002])
+        self.w2.addItem(self.normed_roi)
+
+        # Finally ad view
+        self.d1.addWidget(self.view)
+
+
+
+        #################################################################
+        # Now lets do the buttons, we have to use a Layout widget
+        #################################################################
+        self.button_view = pg.LayoutWidget()
+
+        # Now lets do the gradsplit row
+        self.button_view.addWidget(QLabel(text='Enter days\nto split'), row=0, col=0)
+        self.gradsplitText = QLineEdit(str(self.gradsplit))
+        self.button_view.addWidget(self.gradsplitText, row=0, col=1)
+
+        self.gradsplitBtn = QtGui.QPushButton('GO')
+        self.button_view.addWidget(self.gradsplitBtn, row=0, col=2)
+        self.gradsplitBtn.clicked.connect(self.resegment_data)
+
+
+        self.button_view.addWidget(QLabel(text='Bin size [minutes]'), row=1, col=0)
+        self.bin_size_text = QLineEdit('10')
+        self.button_view.addWidget(self.bin_size_text, row=1, col=1)
+
+        self.binBtn = QtGui.QPushButton('GO')
+        self.button_view.addWidget(self.binBtn, row=1, col=2)
+        self.binBtn.clicked.connect(self.rebin_data)
+
+        # Finally add the layout widget to d_segment_split
+        self.d_segment_split.addWidget(self.button_view)
+
+
+        #################################################################
+        # Now we add the Layout widget for fitted parameters
+        # Now lets do the buttons, we have to use a Layout widget
+        #################################################################
+        self.fitted_parameters_view = pg.LayoutWidget()
+
+        # First, lets do the iterations
+        self.fitted_parameters_view.addWidget(QLabel(text='SG iterations'), row=0, col=0)
+        self.SG_iter_text = QLineEdit('5')
+        self.fitted_parameters_view.addWidget(self.SG_iter_text, row=0, col=1)
+
+        # Now lets do the scale 
+        self.fitted_parameters_view.addWidget(QLabel(text='SG filter size [days]'), row=1, col=0)
+        self.SG_window_text = QLineEdit('2')
+        self.fitted_parameters_view.addWidget(self.SG_window_text, row=1, col=1)
+
+        # Finally, ad the go button
+        self.normBtn = QtGui.QPushButton('GO')
+        self.fitted_parameters_view.addWidget(self.normBtn, row=1, col=2)
+        self.normBtn.clicked.connect(self.renormalised_data)
+
+        # Finally, add the view
+        self.d_normalisation.addWidget(self.fitted_parameters_view)
+
+
+
+
+
+        #################################################################
+        # Next section is to write the data
+        #################################################################
+        self.write_data_view = pg.LayoutWidget()
+        self.write_data_view.addWidget(QLabel(text='Data prefix'), row=0, col=0)
+
+        # Now get the data prefix
+        self.write_data_prefix = QLineEdit('{:}_SPOC'.format(title))
+        self.write_data_view.addWidget(self.write_data_prefix, row=0, col=1,  rowspan=1, colspan=2)
+
+        # Add the fits file writeout
+        self.write_fits_Btn = QtGui.QPushButton('FITS')
+        self.write_data_view.addWidget(self.write_fits_Btn, row=1, col=0)
+        #self.write_fits_Btn.clicked.connect(self.write_fits_data)
+
+        # Add the flux file writeout
+        self.write_flux_Btn = QtGui.QPushButton('FLUX')
+        self.write_data_view.addWidget(self.write_flux_Btn, row=1, col=1)
+        #self.write_flux_Btn.clicked.connect(self.write_flux_data)
+
+        # Now add the mag write out
+        self.write_mag_Btn = QtGui.QPushButton('MAG')
+        self.write_data_view.addWidget(self.write_mag_Btn, row=1, col=2)
+        #self.write_mag_Btn.clicked.connect(self.write_mag_data)
+
+        # Finally, add the view
+        self.d_write_data.addWidget(self.write_data_view)
+  
+
+        #################################################################
+        # First, create the saveplotview
+        #################################################################
+        self.save_plot_view = pg.LayoutWidget()
+
+        # set the prefix
+        self.save_plot_view.addWidget(QLabel(text='Plot prefix'), row=0, col=0)
+        self.save_plot_prefix = QLineEdit('{:}_SPOC'.format(title))
+        self.save_plot_view.addWidget(self.save_plot_prefix, row=0, col=1)
+  
+        # Finally, ad the go button
+        self.save_plot_Btn = QtGui.QPushButton('SAVE PLOT')
+        self.save_plot_view.addWidget(self.save_plot_Btn, row=1, col=0,colspan=2)
+        #self.save_plot_Btn.clicked.connect(self.save_plot)
+
+        # Finally, add the view
+        self.d_save_image.addWidget(self.save_plot_view)
+
+
+
+
+        #################################################################
+        # Lightcurve parameters
+        #################################################################
+        # Now do the lightcurvve parameters
+        self.lc_parameters_view = pg.LayoutWidget()
+
+        # Now do Epoch
+        self.lc_parameters_view.addWidget(QLabel(text='Epoch\n[BTJD]'), row=0, col=0)
+        self.lc_pars_epoch_input = QLineEdit('{:.2f}'.format(np.median(self.data['TIME']) if hasattr(self, 'data') else 1566))
+        self.lc_parameters_view.addWidget(self.lc_pars_epoch_input, row=0, col=1)
+
+        # Now do period
+        self.lc_parameters_view.addWidget(QLabel(text='Period\n[day]'), row=0, col=2)
+        self.lc_pars_period_input = QLineEdit('30.')
+        self.lc_parameters_view.addWidget(self.lc_pars_period_input, row=0, col=3)
+
+        # Now do R1/a
+        self.lc_parameters_view.addWidget(QLabel(text='R1 / a'), row=1, col=0)
+        self.lc_pars_r1a_input = QLineEdit('0.2')
+        self.lc_parameters_view.addWidget(self.lc_pars_r1a_input, row=1, col=1)
+
+        # Now do k
+        self.lc_parameters_view.addWidget(QLabel(text='R2 / R1'), row=1, col=2)
+        self.lc_pars_r2r1_input = QLineEdit('0.2')
+        self.lc_parameters_view.addWidget(self.lc_pars_r2r1_input, row=1, col=3)
+
+        # Now do b
+        self.lc_parameters_view.addWidget(QLabel(text='b'), row=1, col=4)
+        self.lc_pars_b_input = QLineEdit('0.')
+        self.lc_parameters_view.addWidget(self.lc_pars_b_input, row=1, col=5)
+
+        # Now do h1 and h2
+        self.lc_parameters_view.addWidget(QLabel(text='ldc 1'), row=2, col=0)
+        self.lc_pars_ldc_1_input = QLineEdit('0.6536')
+        self.lc_parameters_view.addWidget(self.lc_pars_ldc_1_input, row=2, col=1)
+
+        self.lc_parameters_view.addWidget(QLabel(text='ldc 2'), row=2, col=2)
+        self.lc_pars_ldc_2_input = QLineEdit('0.5739')
+        self.lc_parameters_view.addWidget(self.lc_pars_ldc_2_input, row=2, col=3)
+
+        # Now do zp
+        self.lc_parameters_view.addWidget(QLabel(text='zp'), row=2, col=4)
+        self.lc_pars_zp_input = QLineEdit('1.')
+        self.lc_parameters_view.addWidget(self.lc_pars_zp_input, row=2, col=5)
+
+        # Now add a check box to inddicate if it is a single transit
+        self.lc_pars_single_check_box = QCheckBox("Single Transit? ")
+        self.lc_parameters_view.addWidget(self.lc_pars_single_check_box, row=6, col=0)
+        #self.lc_pars_single_check_box.stateChanged.connect(self.update_single_transit_par)
+
+        self.get_tzero_toggle = QCheckBox("Click t_zero")
+        self.lc_parameters_view.addWidget(self.get_tzero_toggle, row=6, col=2)
+        #self.w1.scene().sigMouseClicked.connect(self.onClick)
+
+
+        # Finally, ad the go button
+        self.generate_lc_Btn = QtGui.QPushButton('GENERATE MODEL')
+        self.lc_parameters_view.addWidget(self.generate_lc_Btn, row=7, col=0, colspan=2)
+        #self.generate_lc_Btn.clicked.connect(self.generate_lc_model)
+
+        # Finally, ad the clear button
+        self.clear_lc_Btn = QtGui.QPushButton('CLEAR MODEL')
+        self.lc_parameters_view.addWidget(self.clear_lc_Btn, row=7, col=2, colspan=2)
+        #self.clear_lc_Btn.clicked.connect(self.clear_lc_model)
+
+        # Finally, add the view
+        self.d_fitted.addWidget(self.lc_parameters_view)
+
+
+        #################################################################
+        # Next up is stellar parameters
+        # Now do the lightcurvve parameters
+        #################################################################
+        self.lc_stellar_view = pg.LayoutWidget()
+
+        self.lc_stellar_view.addWidget(QLabel(text='TIC ID'), row=0, col=0)
+        #self.stellar_pars_tic_input = QLineEdit(title.split('-')[1])
+        #self.lc_stellar_view.addWidget(self.stellar_pars_tic_input, row=0, col=1)
+
+        self.lc_stellar_view.addWidget(QLabel(text='Tmag'), row=0, col=2)
+        self.stellar_pars_Tmag = QLineEdit()
+        self.lc_stellar_view.addWidget(self.stellar_pars_Tmag, row=0, col=3)
+
+        self.stellar_pars_tic_qry_Btn = QtGui.QPushButton('QUERY PARAMETERS')
+        self.lc_stellar_view.addWidget(self.stellar_pars_tic_qry_Btn, row=1, col=0, colspan=2)
+        #self.stellar_pars_tic_qry_Btn.clicked.connect(self.query_tic_params)
+
+        self.stellar_pars_ld_interp_Btn = QtGui.QPushButton('INTERP LD')
+        self.lc_stellar_view.addWidget(self.stellar_pars_ld_interp_Btn, row=1, col=2, colspan=2)
+        #self.stellar_pars_ld_interp_Btn.clicked.connect(self.interp_ld_pars)
+
+        self.lc_stellar_view.addWidget(QLabel(text='R1 [Rsol]'), row=2, col=0)
+        self.stellar_pars_R1_input = QLineEdit()
+        self.lc_stellar_view.addWidget(self.stellar_pars_R1_input, row=2, col=1)
+
+        self.normed_roi_checkbox = QCheckBox("Inspect transit? ")
+        self.lc_stellar_view.addWidget(self.normed_roi_checkbox, row=4, col=2)
+        #self.normed_roi_checkbox.stateChanged.connect(self.update_normed_roi)
+
+        self.lc_stellar_view.addWidget(QLabel(text='Width [hr]'), row=5, col=2)
+        self.roi_width = QLineEdit()
+        self.lc_stellar_view.addWidget(self.roi_width, row=5, col=3)
+
+        self.lc_stellar_view.addWidget(QLabel(text='Depth [ppt]'), row=6, col=2)
+        self.roi_depth = QLineEdit()
+        self.lc_stellar_view.addWidget(self.roi_depth, row=6, col=3)
+
+        self.lc_stellar_view.addWidget(QLabel(text='M1 [Msol]'), row=3, col=0)
+        self.stellar_pars_M1_input = QLineEdit()
+        self.lc_stellar_view.addWidget(self.stellar_pars_M1_input, row=3, col=1)
+
+        self.lc_stellar_view.addWidget(QLabel(text='Teff [K]'), row=4, col=0)
+        self.stellar_pars_Teff_input = QLineEdit('5777')
+        self.lc_stellar_view.addWidget(self.stellar_pars_Teff_input, row=4, col=1)
+
+        self.lc_stellar_view.addWidget(QLabel(text='[Fe/H]'), row=5, col=0)
+        self.stellar_pars_FeH_input = QLineEdit('0.0')
+        self.lc_stellar_view.addWidget(self.stellar_pars_FeH_input, row=5, col=1)
+
+        self.lc_stellar_view.addWidget(QLabel(text='log g [dex]'), row=6, col=0)
+        self.stellar_pars_logg_input = QLineEdit('4.44')
+        self.lc_stellar_view.addWidget(self.stellar_pars_logg_input, row=6, col=1)
+
+        # Finally, add the view
+        self.d_stellar.addWidget(self.lc_stellar_view)
+
+
+        #################################################################
+        # Now do fitting routines here
+        #################################################################
+        self.fitting_view = pg.LayoutWidget()
+
+        # First, lets do the iterations
+        self.fitting_view.addWidget(QLabel(text='Free parameters:'), row=0, col=0, colspan=2)
+        self.fitting_cut_data = QCheckBox("Cut data?")
+        self.fitting_view.addWidget(self.fitting_cut_data, row=0, col=2, colspan=2)
+
+        self.fitting_t_zero_free = QCheckBox("Epoch")
+        self.fitting_view.addWidget(self.fitting_t_zero_free, row=1, col=0)
+        self.fitting_period_free = QCheckBox("Period")
+        self.fitting_view.addWidget(self.fitting_period_free, row=1, col=1)
+        self.fitting_radius_1_free = QCheckBox("R1/a")
+        self.fitting_view.addWidget(self.fitting_radius_1_free, row=1, col=2)
+        self.fitting_k_free = QCheckBox("R2/R1")
+        self.fitting_view.addWidget(self.fitting_k_free, row=1, col=3)
+        self.fitting_b_free = QCheckBox("b")
+        self.fitting_view.addWidget(self.fitting_b_free, row=1, col=4)
+        self.fitting_zp_free = QCheckBox("zp")
+        self.fitting_view.addWidget(self.fitting_zp_free, row=1, col=5)  
+
+        self.fitting_view.addWidget(QLabel(text='Fit prefix'), row=2, col=0)
+
+        # Now get the data prefix
+        self.fit_prefix = QLineEdit('{:}_SPOC_FIT'.format(title))
+        self.fitting_view.addWidget(self.fit_prefix, row=2, col=1,  rowspan=1, colspan=5)
+
+        self.fitting_view.addWidget(QLabel(text='Steps'), row=3, col=0, colspan=1)
+        self.fit_nsteps = QLineEdit('1000')
+        self.fitting_view.addWidget(self.fit_nsteps, row=3, col=1, colspan=1)
+
+        self.fitting_view.addWidget(QLabel(text='Walker mult'), row=3, col=2, colspan=1)
+        self.fit_nwalker_multiplier = QLineEdit('4')
+        self.fitting_view.addWidget(self.fit_nwalker_multiplier, row=3, col=3, colspan=1)
+
+        self.fitting_view.addWidget(QLabel(text='Nproc'), row=0, col=4, colspan=1)
+        self.fit_nproc = QLineEdit('all')
+        self.fitting_view.addWidget(self.fit_nproc, row=0, col=5, colspan=1)
+
+        self.fitting_view.addWidget(QLabel(text='burn in'), row=3, col=4, colspan=1)
+        self.fit_burn_in = QLineEdit('500')
+        self.fitting_view.addWidget(self.fit_burn_in, row=3, col=5, colspan=1)
+
+
+        # Now add the fit button
+        self.fit_lc_Btn = QtGui.QPushButton('FIT')
+        self.fitting_view.addWidget(self.fit_lc_Btn, row=4, col=0)
+        #self.fit_lc_Btn.clicked.connect(self.fit_lightcurve)
+
+        # Now create the progress bar
+        self.fitting_view_progress_bar = QProgressBar()
+        self.fitting_view_progress_bar.setGeometry(200, 80, 250, 20)
+        self.fitting_view.addWidget(self.fitting_view_progress_bar, row=4, col=1, colspan=5)
+
+        # Now lets add a results box
+        self.results_box = QPlainTextEdit('Results will appear here')
+        self.fitting_view.addWidget(self.results_box, row=5, col=0, colspan=5, rowspan=4)
+
+        self.fit_lc_write_Btn = QtGui.QPushButton('WRITE')
+        self.fitting_view.addWidget(self.fit_lc_write_Btn, row=5, col=5)
+        #self.fit_lc_write_Btn.clicked.connect(self.write_results)
+
+        self.fit_lc_chains_Btn = QtGui.QPushButton('CHAINS')
+        self.fitting_view.addWidget(self.fit_lc_chains_Btn, row=6, col=5)
+        #self.fit_lc_chains_Btn.clicked.connect(self.plot_chains)
+
+        self.fit_lc_corner_Btn = QtGui.QPushButton('CORNER')
+        self.fitting_view.addWidget(self.fit_lc_corner_Btn, row=7, col=5)
+        #self.fit_lc_corner_Btn.clicked.connect(self.plot_corner)
+
+        # Finally, add the view
+        self.d_fitting.addWidget(self.fitting_view)
+
+        # Finally set anti alias
+        pg.setConfigOptions(antialias=True)
+
+        self.win.show()
+
+
+    def load_data(self,time, flux, flux_err, runtime):
+        self.time, self.flux, self.flux_err = np.array(time,dtype=np.float64), np.array(flux,dtype=np.float64),np.array(flux_err,dtype=np.float64)
+        self.normliastion_model = np.ones(self.time.shape, dtype=np.float64)
+        self.segments = [np.arange(self.time.shape[0], dtype=int)]
+        self.time_offset = int(np.floor(np.min(self.time)))
+        self.runtime=runtime
+
+    def resegment_data(self,):
+        # First, clear the axis
+        self.w1.clear()
+        self.w2.clear()
+        self.w3.clear()
+
+        # Now get the segments
+        self.segments = openlc.binarystar.utils.find_nights_from_data(self.time, float(self.gradsplitText.text()))
+        self.binned_segments = openlc.binarystar.utils.find_nights_from_data(self.time_bin, float(self.gradsplitText.text()))
+
+        # Now re-draw the data
+        self.renormalised_data()
+        self.draw_data()
+
+    def renormalised_data(self,):
+        self.normalise_data()
+        self.draw_data()
+    def normalise_data(self,):
+        # Check SG_window_length
+        if not hasattr(self, 'SG_window_length') : self.SG_window_length = 101
+
+        # Now check it is odd 
+        if not self.SG_window_length&1 : self.SG_window_length +=1
+
+        # Now normalise
+        #for i in range(len(self.segments)):
+        #    window_scale = int(float(self.SG_window_text.text()) / np.median(np.gradient(self.time[self.segments[i]])) )
+        #    if not window_scale&1 : window_scale +=1
+        #    self.normliastion_model[self.segments[i]] = openlc.binarystar.utils.flatten_data_with_function(self.time[self.segments[i]], self.flux[self.segments[i]], SG_window_length=window_scale, SG_iter=int(self.SG_iter_text.text()))
+
+        window_scale = int(float(self.SG_window_text.text()) / np.median(np.gradient(self.time)) )
+        if not window_scale&1 : window_scale +=1
+        self.normliastion_model = openlc.binarystar.utils.flatten_data_with_function(self.time, self.flux, SG_window_length=window_scale, SG_iter=int(self.SG_iter_text.text()))
+        self.binned_normliastion_model = np.interp(self.time_bin, self.time, self.normliastion_model)
+
+    def draw_data(self,):
+        # First, clear the axis
+        self.w1.clear()
+        self.w2.clear()
+        self.w3.clear()
+
+        self.data_raw_plot_error =  [self.w1.addItem(pg.ErrorBarItem(x=self.time[self.segments[i]]-self.time_offset, y=self.flux[self.segments[i]], top=self.flux_err[self.segments[i]], bottom=self.flux_err[self.segments[i]], beam=0.0)) for i in range(len(self.segments))]
+        self.data_raw_plot_point =  [self.w1.plot(x=self.time[self.segments[i]]-self.time_offset, y=self.flux[self.segments[i]], top=self.flux_err[self.segments[i]], bottom=self.flux_err[self.segments[i]], beam=0.0, pen=pg.mkPen(color='w')) for i in range(len(self.segments))]
+        
+        err = pg.ErrorBarItem(x=self.time_bin-self.time_offset, y=self.flux_bin, top=self.flux_bin_err, bottom=self.flux_bin_err, beam=0.0,  pen=pg.mkPen(color='b'))
+        err.setZValue(10)
+        err_pts = [self.w1.plot(x=self.time_bin[self.binned_segments[i]]-self.time_offset, y=self.flux_bin[self.binned_segments[i]],pen=pg.mkPen(color='b')) for i in range(len(self.binned_segments))]
+        for i in range(len(err_pts)) : err_pts[i].setZValue(11)
+
+        norm_model = [self.w1.plot(x=self.time[self.segments[i]]-self.time_offset, y=self.normliastion_model[self.segments[i]],pen=pg.mkPen(color='r')) for i in range(len(self.segments))]
+        for i in range(len(norm_model)) : err_pts[i].setZValue(12)
+
+
+        self.data_raw_plot_error =  [self.w2.addItem(pg.ErrorBarItem(x=self.time[self.segments[i]]-self.time_offset, y=self.flux[self.segments[i]]/self.normliastion_model[self.segments[i]], top=self.flux_err[self.segments[i]]/self.normliastion_model[self.segments[i]], bottom=self.flux_err[self.segments[i]], beam=0.0)) for i in range(len(self.segments))]
+        self.data_raw_plot_point =  [self.w2.plot(x=self.time[self.segments[i]]-self.time_offset, y=self.flux[self.segments[i]]/self.normliastion_model[self.segments[i]], top=self.flux_err[self.segments[i]]/self.normliastion_model[self.segments[i]], bottom=self.flux_err[self.segments[i]]/self.normliastion_model[self.segments[i]], beam=0.0, pen=pg.mkPen(color='w')) for i in range(len(self.segments))]
+        
+        err = pg.ErrorBarItem(x=self.time_bin-self.time_offset, y=self.flux_bin/self.binned_normliastion_model, top=self.flux_bin_err/self.binned_normliastion_model, bottom=self.flux_bin_err/self.binned_normliastion_model, beam=0.0,  pen=pg.mkPen(color='b'))
+        err.setZValue(10)
+        err_pts = [self.w2.plot(x=self.time_bin[self.binned_segments[i]]-self.time_offset, y=self.flux_bin[self.binned_segments[i]]/self.binned_normliastion_model[self.binned_segments[i]],pen=pg.mkPen(color='b')) for i in range(len(self.binned_segments))]
+        for i in range(len(err_pts)) : err_pts[i].setZValue(11)
+
+
+        self.w1.addItem(err)
+        self.w1.setLimits()
+
+    def bin_data(self,):
+        self.time_bin, self.flux_bin, self.flux_bin_err =  openlc.binarystar.utils.bin_data_fast(self.time, self.flux, float(self.bin_size_text.text())/1440, runtime=self.runtime)
+    def rebin_data(self,):
+        # Now get the segments
+        self.bin_data()
+
+        self.resegment_data()
+
+
+
+
+
+if __name__=='__main__':
+    # First, parse args
+    args = parse_args()
+
+    # Now load data
+    if args.paophot2:
+        import ngts, matplotlib
+        #matplotlib.use('Qt5Agg')
+        print('Loading data...', flush=True)
+        a = ngts.NGTS_timeseries.NGTS_paophot_data.paophot2_data(args.filename)
+        print('Simgma clipping data...', flush=True)
+        a = a.sigma_clip_data()
+        print('Alignign cameras...', flush=True)
+        a = a.align_cameras()
+        print('Simgma clipping data again...', flush=True)
+        a = a.sigma_clip_data()
+        if len(args.paophot2_detrend)>0:
+            a.detrend_data_with_vectors(colnames=args.paophot2_detrend)
+            a.data['TARGET_DETRENDED'] = a.data['TARGET_DETRENDED'] / a.data['TREND']
+            a.data['TARGET_DETRENDED_ERR'] = a.data['TARGET_DETRENDED_ERR'] / a.data['TREND']
+
+        time, flux, flux_err = np.array(a.data['BJD'], dtype = np.float64), np.array(a.data['TARGET_DETRENDED'], dtype = np.float64), np.array(a.data['TARGET_DETRENDED_ERR'], dtype = np.float64)
+        #_, _, (    trends, _ , _ , _, _, _, _, _) = a.prewhiten_data(min_period = 20, max_period=250)   
+        #trend = np.sum(np.array(trends), axis=0)
+        #print(trend.shape)
+        #flux = flux / trend 
+        #flux_err = flux_err / trend 
+
+    elif args.ngts_archive:
+        t = Table.read(args.filename)
+        mask = t['FLAGS_1']==0
+        t = t[mask]
+        time = np.array(t['BJD'], dtype = np.float64)
+        flux = np.array(t['SYSREM_FLUX'], dtype = np.float64)
+        flux_err =  np.array(t['RAW_FLUX_ERR'], dtype = np.float64) 
+        flux_err = flux_err / np.median(flux)
+        flux = flux / np.median(flux)
+    else : time, flux, flux_err = np.loadtxt(args.filename).T
+
+
+
+    runtime = openlc.context_manager.create_context_and_queue(answers=[args.context, args.device])
+    app = Window(title='LCMATCH')
+    app.load_data(time,flux,flux_err, runtime)
+    app.bin_data()
+    app.resegment_data()
+    app.normalise_data()
+    app.draw_data()
+    pg.exec()
+
+
+
+
+    exit()
+
+
+
+    w = pg.GraphicsLayoutWidget()
+    w.show()
+    err = pg.ErrorBarItem(x=time, y=flux, top=flux_err, bottom=flux_err, beam=0., pen=pg.mkPen("#D0D0D030"))
+    err.setZValue(0)
+    plt = w.addPlot(row=0, col=0)
+    plt.addItem(err)
+
+    runtime = openlc.context_manager.create_context_and_queue(answers=[args.context,args.device])
+    t_bin, f_bin, fe_bin = openlc.binarystar.utils.bin_data_fast(time, flux, bin_width=0.5/24/3, runtime=runtime)
+    err_bin = pg.ErrorBarItem(x=t_bin, y=f_bin, top=fe_bin, bottom=fe_bin, beam=0., pen=pg.mkPen(color='b', width=3))
+    err_bin.setZValue(1)
+    plt.addItem(err_bin)
+
+    pg.exec()
+
+    exit()

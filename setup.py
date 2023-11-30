@@ -1,5 +1,5 @@
 import warnings
-warnings.filterwarnings("ignore")
+#warnings.filterwarnings("ignore")
 
 from setuptools import setup, Extension, find_packages
 #from numpy.distutils.core import setup
@@ -15,5 +15,6 @@ setup(
     license = 'GNU',
     #packages=['bruce','pwdbruce/binarystar'],
     packages = find_packages(),
-    package_data={'openlc': ['c_src/*.c', 'c_src/*.h']},
+    package_data={'openlc': ['c_src/total.c']},
+    scripts=['programs/lcmatch'],
     install_requires=['pyopencl'] , zip_safe=False,)

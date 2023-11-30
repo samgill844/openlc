@@ -1,0 +1,370 @@
+#!/home/sam/anaconda3/bin/python
+import openlc, argparse, numpy as np, math
+from astropy.table import Table
+import matplotlib.pyplot as plt
+from astropy.stats import sigma_clip
+from scipy.signal import find_peaks
+
+
+from matplotlib import pyplot as plt
+from matplotlib.axes import Axes
+from matplotlib import gridspec
+plt.rcParams["font.family"] = "Times New Roman"
+
+class subplot():
+    def __init__(self,*argv, nrows=None, ncols=None, size=(4,4)):
+        if len(argv)==2:
+            nrows=argv[0]
+            ncols=argv[1]
+        
+        # Set figure
+        self.fig = plt.figure(figsize=size)
+        
+        # Set list of geometry
+        self.geometry = []
+        
+        # Set GridSpec
+        self.gs = self.fig.add_gridspec(nrows,ncols, hspace=0, wspace=0)
+        
+        # Update nrows and ncols
+        self.nrows = nrows
+        self.ncols = ncols
+
+    def __getitem__(self, items) -> Axes:
+        self.append2geometry(items)
+        return self.fig.add_subplot(self.gs.__getitem__(items))
+    
+    def show(self) -> None:
+        plt.show()
+        
+    def resize(self, nrows, ncols):
+        
+        gs = gridspec.GridSpec(nrows, ncols)
+        
+        for ax, geo in zip(self.fig.axes, self.geometry):
+            pos = gs[geo].get_position(self.fig)
+            ax.set_position(pos)
+            ax.set_subplotspec(gs[geo])
+        
+        self.gs = gs
+        
+    def concretize(self, sl,max:int):
+        if type(sl) == slice:
+            if sl.start == None: start = 0
+            else: start = sl.start
+            
+            if sl.stop == None: stop = max
+            else: stop = sl.stop
+            
+            return slice(start,stop)
+        
+        elif type(sl) == int: return sl
+        else: raise TypeError('I can only concretize only on int or slice')
+        
+    def append2geometry(self, items):
+        x = self.concretize(items[0],self.nrows)
+        y = self.concretize(items[1],self.ncols)
+        self.geometry.append((x,y))
+        
+    def ax(self,x,y) -> Axes:
+        self.append2geometry((x,y))
+        return self.fig.add_subplot(self.gs[x,y])
+    
+
+
+def parse_args():
+
+    # Argument parser
+    parser = argparse.ArgumentParser('LCMATCH: template matching algorithm for lightcurves.')
+
+    parser.add_argument("filename",
+                        help='The filename from which to template search')
+
+    parser.add_argument('-a', 
+                        '--period',
+                        help='The orbital period in arbritraty time units consisting with the input file.',
+                        default=10, type=float)  
+
+    parser.add_argument('-b', 
+                        '--radius_1',
+                        help='The radius of star 1 in units of the semi-major axis, a.',
+                        default=0.2, type=float)  
+
+    parser.add_argument('-c', 
+                        '--k',
+                        help='The ratio of the radii of star 2 and star 1 (R2/R1).',
+                        default=0.2, type=float)  
+        
+    parser.add_argument('-d', 
+                        '--b',
+                        help='The impact parameter of the orbit (incl = arccos(radius_1*b).',
+                        default=0., type=float)  
+
+    parser.add_argument('-e', 
+                        '--light_3',
+                        help='The third light.',
+                        default=0.0, type=float) 
+    
+    parser.add_argument('-f', 
+                        '--fs',
+                        help='fs.',
+                        default=0.0, type=float) 
+    parser.add_argument('-g', 
+                        '--fc',
+                        help='fc',
+                        default=0.0, type=float) 
+
+    parser.add_argument('-i', 
+                        '--ldc_1',
+                        help='ldc_1',
+                        default=0.7, type=float) 
+    parser.add_argument('-k', 
+                        '--ldc_2',
+                        help='ldc_2',
+                        default=0.5, type=float) 
+
+
+
+    parser.add_argument('-l', 
+                        '--output_dir',
+                        help='Tha save path directory',
+                        default='.',  type=str) 
+    
+    parser.add_argument('-m', 
+                        '--name',
+                        help='The name of the star',
+                        default='star',  type=str) 
+
+
+
+    parser.add_argument('-n', 
+                        '--context',
+                        help='Tha openCL context',
+                        default=0,  type=int) 
+    
+    parser.add_argument('-o', 
+                        '--device',
+                        help='Tha openCL device.',
+                        default=2,  type=int) 
+    
+
+    parser.add_argument('-p', 
+                        '--threshold',
+                        help='The threshold',
+                        default=0., type=float) 
+    
+
+
+
+    parser.add_argument('-q', 
+                        '--bin_data',
+                        help='Bin',
+                        default=None, type=float) 
+
+    parser.add_argument('-r', 
+                        '--keep',
+                        help='The number of peaks to keep. Default is 10',
+                        default=10, type=int) 
+
+    parser.add_argument('--determine_threshold', action="store_true", default=False)
+
+    parser.add_argument('--plot_aliases', action="store_true", default=False)
+    parser.add_argument('--estimate_snr', action="store_true", default=False)
+    parser.add_argument('--paophot2', action="store_true", default=False)
+    parser.add_argument('--ngts_archive', action="store_true", default=False)
+    parser.add_argument('--check_normaliation_model', action="store_true", default=False)
+    parser.add_argument('--injection_test', action="store_true", default=False)
+
+    parser.add_argument('-x', 
+                        '--sg_iter',
+                        help='sg_iter',
+                        default=5, type=int) 
+    parser.add_argument('-y', 
+                        '--sg_window',
+                        help='sg_window',
+                        default=2.0, type=float)
+    parser.add_argument('-z', 
+                        '--sg_sigmaclip',
+                        help='sg_sigmaclip',
+                        default=3, type=int) 
+
+    parser.add_argument('-aa', 
+                        '--normalisation_model',
+                        help='Normalisation model',
+                        default=None, type=str) 
+    
+    parser.add_argument('-ab', '--paophot2_detrend', 
+                        help='A list of parameters to detrend with', 
+                        nargs='+',
+                        default=[])
+    
+
+    parser.add_argument('-ac', 
+                        '--sigmaclip',
+                        help='sigmaclip',
+                        default=None, type=int) 
+    
+    parser.add_argument('-ad', 
+                        '--raw_alpha',
+                        help='raw_alpha',
+                        default=0.2, type=float) 
+
+    parser.add_argument('-ade', 
+                        '--distance',
+                        help='distance',
+                        default=100, type=int) 
+ 
+
+    return parser.parse_args()
+
+
+
+
+
+if __name__=='__main__':
+    # First, parse args
+    args = parse_args()
+
+    # Now load data
+    if args.paophot2:
+        import ngts, matplotlib
+        #matplotlib.use('Qt5Agg')
+        print('Loading data...', flush=True)
+        a = ngts.NGTS_timeseries.NGTS_paophot_data.paophot2_data(args.filename)
+        print('Simgma clipping data...', flush=True)
+        a = a.sigma_clip_data()
+        print('Alignign cameras...', flush=True)
+        a = a.align_cameras()
+        print('Simgma clipping data again...', flush=True)
+        a = a.sigma_clip_data()
+        if len(args.paophot2_detrend)>0:
+            a.detrend_data_with_vectors(colnames=args.paophot2_detrend)
+            a.data['TARGET_DETRENDED'] = a.data['TARGET_DETRENDED'] / a.data['TREND']
+            a.data['TARGET_DETRENDED_ERR'] = a.data['TARGET_DETRENDED_ERR'] / a.data['TREND']
+
+        time, flux, flux_err = np.array(a.data['BJD'], dtype = np.float64), np.array(a.data['TARGET_DETRENDED'], dtype = np.float64), np.array(a.data['TARGET_DETRENDED_ERR'], dtype = np.float64)
+        #_, _, (    trends, _ , _ , _, _, _, _, _) = a.prewhiten_data(min_period = 20, max_period=250)   
+        #trend = np.sum(np.array(trends), axis=0)
+        #print(trend.shape)
+        #flux = flux / trend 
+        #flux_err = flux_err / trend 
+
+    elif args.ngts_archive:
+        t = Table.read(args.filename)
+        mask = t['FLAGS_1']==0
+        t = t[mask]
+        time = np.array(t['BJD'], dtype = np.float64)
+        flux = np.array(t['SYSREM_FLUX'], dtype = np.float64)
+        flux_err =  np.array(t['RAW_FLUX_ERR'], dtype = np.float64) 
+        flux_err = flux_err / np.median(flux)
+        flux = flux / np.median(flux)
+    else : time, flux, flux_err = np.loadtxt(args.filename).T
+
+    # Sigma clip if asked for
+    if args.sigmaclip is not None:
+        mask = ~sigma_clip(flux, sigma=args.sigmaclip, maxiters=5, masked=True).mask
+        print('Sigma clipping reduce data from {:,} to {:,} points'.format(time.shape[0], time[mask].shape[0]))
+        time, flux, flux_err = time[mask], flux[mask], flux_err[mask]
+
+    # Get the time offset
+    time_offset = int(np.floor(np.min(time)))
+
+    # initialse the context
+    runtime = openlc.context_manager.create_context_and_queue(answers=[args.context, args.device])
+
+    # Initialse the normalisation_model
+    normalisation_model = np.median(flux)*np.ones(time.shape)
+
+    args.e = args.fs**2 + args.fc**2
+    args.w = math.atan2(args.fs,args.fc)
+
+
+
+    # Check if threshold is needed
+    if args.determine_threshold:
+        noise = np.std(flux)
+        cadence = np.median(np.gradient(time))
+        limit, fig, ax = openlc.binarystar.get_template_match_threshold(noise, cadence, args.radius_1, args.k, args.b, args.period, runtime, plot=True)
+        plt.savefig('{:}_threshold.png'.format(args.name), dpi=200)
+        plt.close()
+        exit()
+
+    # now run the tls
+    time_trial, DeltaL = openlc.binarystar.template_match_lightcurve(time, flux, flux_err, normalisation_model, period = args.period,
+            radius_1=args.radius_1, k = args.k, incl=np.arccos(args.radius_1*args.b),
+            e=args.e, w = args.w,
+            c = args.ldc_1, alpha =args.ldc_2,
+            cadence=0, noversample=10,
+            light_3=args.light_3,
+            ld_law = -2,
+            accurate_tp=1,
+            runtime=runtime, use_workspace=True,
+            jitter=0., offset=0,
+            time_step=None, time_trial=None)
+
+    # now get the peaks
+    peaks, meta = find_peaks(DeltaL, height=args.threshold, distance=args.distance)
+    Npeaks = len(peaks)
+    Npercol = 4
+    Nrow = int(np.ceil(Npeaks/Npercol))
+
+    # Now bin
+    time_bin, flux_bin, flux_err_bin = openlc.binarystar.bin_data_fast(time, flux, bin_width=0.5/24/3, runtime=runtime)
+    width = openlc.binarystar.utils.transit_width(args.radius_1, args.k, args.b, period=args.period)
+
+
+    size = (10, 3 + 2*Nrow)
+    myfig = subplot(Nrow+1,Npercol,size=size)
+    ax_first = myfig[0,:]
+    ax_first.plot(time_trial-time_offset, DeltaL, c='k',lw=1)
+    ax_first.scatter(time_trial[peaks]-time_offset, DeltaL[peaks]+200, marker='v', s=5, color='blue')
+    for i in range(len(peaks)):
+        ax_first.text(time_trial[peaks[i]]-time_offset, DeltaL[peaks[i]]+400, str(i+1), ha='center')
+    ax_first.axhline(args.threshold, c='orange')
+    ax_first.set(xlabel = 'Time [BJD - {:,}]'.format(time_offset), ylabel = r'$\Delta \log \mathcal{L}$', ylim=(0,None))
+
+
+    # OK, now the peaks
+    i,j = 1,0
+    for p in range(len(peaks)):
+        ax = myfig[i,j]
+        epoch = time_trial[peaks[p]]
+        mask = (time > (epoch - width)) & (time < (epoch + width))   
+        ax.errorbar(time[mask] - epoch, flux[mask], yerr = flux_err[mask], c='grey', markersize=0, alpha = args.raw_alpha)
+
+        mask_bin = (time_bin > (epoch - width)) & (time_bin < (epoch + width))  
+        ax.errorbar(time_bin[mask_bin]-epoch, flux_bin[mask_bin], yerr = flux_err_bin[mask_bin], c='blue', markersize=0)
+
+        # lets get the model
+        time_model = np.linspace(-width, width,1000)
+        model = openlc.binarystar.lc(time_model, t_zero=0, period = args.period,
+                                     radius_1=args.radius_1, k=args.k, incl=np.arccos(args.radius_1*args.b),
+                                     e=args.e,w=args.w, c=args.ldc_1, alpha = args.ldc_2,
+                                     runtime=runtime)
+        ax.plot(time_model, model, lw=1, c='orange')
+        if j==0 : ax.set_ylabel('Flux')
+        ax.set_xlabel('Time')
+        ax.set(xticks=[],yticks=[])
+
+        ax.text(0.1,0.8,str(p+1), transform=ax.transAxes, bbox=dict(boxstyle="square"))
+
+
+        j+=1
+        if j==Npercol:
+            j=0
+            i+=1
+
+    pos = ax_first.get_position()
+    dy = 0.05
+    pos.y0 = pos.y0 + dy      # for example 0.2, choose your value
+    pos.y1 = pos.y1 + dy      # for example 0.2, choose your value
+    ax_first.set_position(pos)
+    #plt.tight_layout()  # Now tight_layout does not add padding between axes
+
+    plt.savefig('{:}_lcmatch.png'.format(args.name), dpi=200,bbox_inches='tight')
+
+    myfig.show()
+
+
+
+ 

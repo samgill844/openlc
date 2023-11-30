@@ -1,1 +1,1 @@
-double _loglike(const double y, const double yerr, const double model, const double jitter, const int offset);
+double _loglike(const double y, const double yerr, const double model,const double jitter, const int offset);

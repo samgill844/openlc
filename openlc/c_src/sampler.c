@@ -1,3 +1,6 @@
+double _loglike(const double y, const double yerr, const double model, const double jitter, const int offset);
+
+
 double _loglike(const double y, const double yerr, const double model,
                 const double jitter, const int offset)
 {
@@ -7,11 +10,11 @@ double _loglike(const double y, const double yerr, const double model,
     return loglikeliehood;
 }
 
-/*
-__kernel void loglike(__global const double *y_g, __global const double *yerr_g, __global const double *model_g,
+
+__kernel void loglike(__global double * result, __global const double *y_g, __global const double *yerr_g, __global const double *model_g,
                 const double jitter, const int offset)
 {
   int gid = get_global_id(0);
-  res_g[gid] = loglike_(y_g[gid], yerr_g[i], model_g[gid],
+  result[gid] = _loglike(y_g[gid], yerr_g[gid], model_g[gid],
                 jitter, offset);
-}*/
+}

@@ -7,7 +7,7 @@ double vsign(double a, double b)
     if (b >= 0) return fabs(a);
     return -fabs(a);
 }
-
+ 
 double merge(double a , double b, bool mask)
 {
     if (mask) return a;

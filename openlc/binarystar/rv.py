@@ -10,11 +10,17 @@ def rv1(t = _np.linspace(0,1,100),
 		runtime=None):
 	# Now set up the parameters
 	t = t.astype(_np.float64)
-	t_g = _cl.Buffer(runtime['ctx'], runtime['mf'].READ_ONLY | runtime['mf'].COPY_HOST_PTR, hostbuf=t)
-	rv_g = _cl.Buffer(runtime['ctx'], runtime['mf'].WRITE_ONLY, t.nbytes)
+	t_g = _cl.Buffer(runtime.ctx, runtime.mf.READ_ONLY | runtime.mf.COPY_HOST_PTR, hostbuf=t)
+	rv_g = _cl.Buffer(runtime.ctx, runtime.mf.WRITE_ONLY, t.nbytes)
+
+	# Get the shapes
+	work_group_size = runtime.max_work_group_size
+	N_work_groups = int(_np.ceil(t.shape[0]/work_group_size))
+	global_size = (N_work_groups*work_group_size,)
+	work_group_size = (work_group_size,)
 
 	# Now call the kernel
-	runtime['kernel_rv1'](runtime['queue'], t.shape, None, 
+	runtime.kernel_rv1(runtime.queue, global_size, work_group_size, 
 		t_g, rv_g, 
 		_np.float64(t_zero), _np.float64(period),
 		_np.float64(K1),
@@ -23,7 +29,7 @@ def rv1(t = _np.linspace(0,1,100),
 		_np.int32(accurate_tp))
 
 	rv_data = _np.empty_like(t)
-	_cl.enqueue_copy(runtime['queue'], rv_data, rv_g)
+	_cl.enqueue_copy(runtime.queue, rv_data, rv_g)
 	return rv_data
 
 
@@ -37,12 +43,18 @@ def rv2(t = _np.linspace(0,1,100),
 		runtime=None):
 	# Now set up the parameters
 	t = t.astype(_np.float64)
-	t_g = _cl.Buffer(runtime['ctx'], runtime['mf'].READ_ONLY | runtime['mf'].COPY_HOST_PTR, hostbuf=t)
-	rv_g1 = _cl.Buffer(runtime['ctx'], runtime['mf'].WRITE_ONLY, t.nbytes)
-	rv_g2 = _cl.Buffer(runtime['ctx'], runtime['mf'].WRITE_ONLY, t.nbytes)
+	t_g = _cl.Buffer(runtime.ctx, runtime.mf.READ_ONLY | runtime.mf.COPY_HOST_PTR, hostbuf=t)
+	rv_g1 = _cl.Buffer(runtime.ctx, runtime.mf.WRITE_ONLY, t.nbytes)
+	rv_g2 = _cl.Buffer(runtime.ctx, runtime.mf.WRITE_ONLY, t.nbytes)
+
+	# Get the shapes
+	work_group_size = runtime.max_work_group_size
+	N_work_groups = int(_np.ceil(t.shape[0]/work_group_size))
+	global_size = (N_work_groups*work_group_size,)
+	work_group_size = (work_group_size,)
 
 	# Now call the kernel
-	runtime['kernel_rv2'](runtime['queue'], t.shape, None, 
+	runtime.kernel_rv2(runtime.queue, global_size, work_group_size, 
 		t_g, rv_g1, rv_g2, 
 		_np.float64(t_zero), _np.float64(period),
 		_np.float64(K1),_np.float64(K2),
@@ -51,7 +63,7 @@ def rv2(t = _np.linspace(0,1,100),
 		_np.int32(accurate_tp))
 
 	rv_data_1, rv_data_2 = _np.empty_like(t), _np.empty_like(t)
-	_cl.enqueue_copy(runtime['queue'], rv_data_1, rv_g1)
-	_cl.enqueue_copy(runtime['queue'], rv_data_2, rv_g2)
+	_cl.enqueue_copy(runtime.queue, rv_data_1, rv_g1)
+	_cl.enqueue_copy(runtime.queue, rv_data_2, rv_g2)
 
 	return rv_data_1, rv_data_2

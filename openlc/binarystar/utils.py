@@ -5,6 +5,12 @@ __all__ = ['secondary_phase', 'transit_width', 'transit_width_full', 'stellar_de
 
 import numba as _numba, math as _math, numpy as _np
 from astropy import constants as _c
+from scipy.stats import sem
+import pyopencl as _cl
+
+from scipy.signal import savgol_filter
+from scipy.ndimage.filters import maximum_filter, median_filter
+from scipy.interpolate import UnivariateSpline
 
 mean_solar_day = 86400.002
 R_SunN    = 6.957E8           # m, solar radius 
@@ -32,8 +38,95 @@ planet_albedos = {'Mercury' : 0.088,
                   'Eris' : 0.96}
 
 
+def bin_data_fast(time, flux, bin_width, return_idx=False, 
+                  min_values_per_bin=0,
+                  runtime=None, use_workspace=True):
+    time = time.astype(_np.float64)
+    flux = flux.astype(_np.float64)
+
+    # Create the arrays
+    edges = _np.arange(_np.min(time), _np.max(time), bin_width, dtype=_np.float64)
+    binned_values = _np.zeros(edges.shape[0]-1, dtype = _np.float64)
+    binned_std = _np.zeros(edges.shape[0]-1, dtype = _np.float64)
+    count = _np.zeros(edges.shape[0]-1, dtype = _np.int32)
+
+    # Copy to the device 
+    time_g = _cl.Buffer(runtime.ctx, runtime.mf.READ_ONLY | runtime.mf.COPY_HOST_PTR, hostbuf=time)
+    flux_g = _cl.Buffer(runtime.ctx, runtime.mf.READ_ONLY | runtime.mf.COPY_HOST_PTR, hostbuf=flux)
+    edges_g = _cl.Buffer(runtime.ctx, runtime.mf.READ_ONLY | runtime.mf.COPY_HOST_PTR, hostbuf=edges)
+    binned_values_g = _cl.Buffer(runtime.ctx, runtime.mf.READ_ONLY | runtime.mf.COPY_HOST_PTR, hostbuf=binned_values)
+    binned_std_g = _cl.Buffer(runtime.ctx, runtime.mf.READ_ONLY | runtime.mf.COPY_HOST_PTR, hostbuf=binned_std)
+    count_g = _cl.Buffer(runtime.ctx, runtime.mf.READ_ONLY | runtime.mf.COPY_HOST_PTR, hostbuf=count)
+
+    # Get the shapes
+    if use_workspace:
+        work_group_size = runtime.max_work_group_size
+        N_work_groups = int(_np.ceil(time.shape[0]/work_group_size))
+        global_size = (N_work_groups*work_group_size,)
+        work_group_size = (work_group_size,)		
+    else : global_size, work_group_size = time.shape, None
+
+    # Call the kernel
+    runtime.bin_data(runtime.queue, global_size, work_group_size, 
+        time_g, flux_g, _np.int32(time.shape[0]),
+        edges_g, binned_values_g, binned_std_g,_np.int32(binned_values.shape[0]),
+        count_g).wait()
+    
+    # Now copy back
+    _cl.enqueue_copy(runtime.queue, binned_values, binned_values_g,is_blocking=True)
+    _cl.enqueue_copy(runtime.queue, binned_std, binned_std_g,is_blocking=True)
+    _cl.enqueue_copy(runtime.queue, count, count_g, is_blocking=True)
+
+    # Now mask
+    mask = count > min_values_per_bin
+    time_binned = (edges[1:] + edges[:-1]) / 2
+
+    return time_binned[mask], binned_values[mask], binned_std[mask]
 
 
+
+
+
+def bin_data(time, flux, bin_width, return_idx=False):
+    '''
+    Function to bin the data into bins of a given width. time and bin_width 
+    must have the same units
+    '''
+
+    edges = _np.arange(_np.min(time), _np.max(time), bin_width)
+    dig = _np.digitize(time, edges)
+    time_binned = (edges[1:] + edges[:-1]) / 2
+    flux_binned = _np.array([_np.nan if len(flux[dig == i]) == 0 else flux[dig == i].mean() for i in range(1, len(edges))])
+    err_binned = _np.array([_np.nan if len(flux[dig == i]) == 0 else sem(flux[dig == i]) for i in range(1, len(edges))])
+    time_bin = time_binned[~_np.isnan(err_binned)]
+    err_bin = err_binned[~_np.isnan(err_binned)]
+    flux_bin = flux_binned[~_np.isnan(err_binned)]   
+
+    if return_idx :return time_bin, flux_bin, err_bin, _np.interp(time_bin, time, _np.arange(len(time), dtype = int)).round().astype(int)
+    else          : return time_bin, flux_bin, err_bin
+
+
+
+def find_nights_from_data(x, dx_lim):
+    '''
+    Split array buy time gaps. Can be used to get individual nights in datasets.
+    '''
+    dx = _np.gradient(x) 
+    dx_thresh = _np.sort(_np.where(dx >= dx_lim)[0] +1)
+
+    # Now check for consecutive integers and delte them
+    delete_idxs = []
+    i = 0 
+    while i < (dx_thresh.shape[0]-1):
+        if (dx_thresh[i]+1) == dx_thresh[i+1] :
+            delete_idxs.append(i+1)
+            i +=2
+        else : i +=1
+    dx_thresh = _np.delete(dx_thresh, delete_idxs)
+
+    # create the idx to split
+    idx = _np.arange(x.shape[0])
+    return _np.split(idx, dx_thresh)
 
 
 @_numba.njit
@@ -173,3 +266,35 @@ def JWST_transmission_metric(R1, R2,M2, Teq, Jmag ):
 
     scale_factor = JWST_transmission_metric_get_scale_factor(R2_)
     return scale_factor*R2_**3*Teq*(10**(-0.2*Jmag)) / (M2_*R1**2)
+
+
+
+
+def flatten_data_with_function(time, flux, method = 'savgol', max_median=0, npoly = 3, Nmaxfilter=11, Nmedianfilter=19, splinesmooth=100, SG_window_length=10, SG_polyorder=3, SG_deriv=0, SG_delta=1., SG_iter=1, SG_sigma=3):
+    # Do a maximum/median filter, if needed. 
+    if max_median == 1 : flux = median_filter(maximum_filter(flux, Nmaxfilter), Nmedianfilter)
+    elif max_median == 2 : flux = maximum_filter(median_filter(flux, Nmedianfilter), Nmaxfilter)
+
+
+    # Now enter the flatten methods
+    if method=='poly1d': 
+        return _np.poly1d(_np.polyfit(time, flux, npoly))(time)
+    elif method=='spline':
+        spl = UnivariateSpline(time, flux)
+        spl.set_smoothing_factor(30000)
+        return spl(time)
+    elif method=='savgol':
+        if SG_window_length > len(time) : 
+            SG_window_length = int(0.75*len(time))
+            if ((SG_window_length % 2) ==0) : SG_window_length -= 1 # make sure its an odd number
+        if SG_iter==1 : return savgol_filter(flux, window_length=SG_window_length, polyorder=SG_polyorder, deriv=SG_deriv, delta=SG_delta)
+        else:
+            mask = _np.ones(len(flux), dtype = bool)
+            flux_ = _np.copy(flux) 
+            trend = _np.copy(flux) 
+
+            for i in range(SG_iter):
+                trend[mask] = savgol_filter(flux[mask], window_length=SG_window_length, polyorder=SG_polyorder, deriv=SG_deriv, delta=SG_delta)
+                std = _np.std(flux_[mask] - trend[mask])
+                mask[_np.abs(flux - trend) > SG_sigma*std] = 0
+            return _np.interp(time, time[mask], trend[mask])
